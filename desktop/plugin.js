@@ -3,6 +3,8 @@
  * Disk plugin: jsx/jsxs only. Never invent projects, jobs, packs, or media.
  * Plugin id: smf-aigc-studio-pane. Pack builder stays in smf-h3-capture.
  * No hosted studio-web URL was verified — default source is Local.
+ * Local mounts an iframe only after a client probe reaches :5174 (or :4174).
+ * Python /status is the API badge. It is not the iframe gate.
  */
 import {
   Badge,
@@ -38,6 +40,7 @@ const DOCS_URL = 'https://github.com/smfworks/aigc-production-flow/blob/main/doc
 const PACK_BUILDER_REPO = 'https://github.com/smfworks/smf-h3-capture'
 const PACK_BUILDER_ROUTE = '/h3-capture'
 const DEV_COMMAND = './scripts/dev-studio.sh all'
+const CLIENT_PROBE_MS = 2000
 
 const LIVE_NOTE =
   'No hosted studio-web URL was verified. Studio is local-first. The Vercel deploy is the pack builder (AIGC Flow / smf-h3-capture), not this pane.'
@@ -54,12 +57,21 @@ const $iframeError = atom(false)
 const $iframeNonce = atom(0)
 const $forceEmbed = atom(false)
 const $copyHint = atom('')
+const $clientProbeTick = atom(0)
 let iframeNonce = 0
+let clientProbeTick = 0
 
 function remountFrame() {
   iframeNonce += 1
   $iframeError.set(false)
   $iframeNonce.set(iframeNonce)
+}
+
+function retryLocalProbe() {
+  $forceEmbed.set(false)
+  clientProbeTick += 1
+  $clientProbeTick.set(clientProbeTick)
+  remountFrame()
 }
 
 function readStoredSource() {
@@ -75,6 +87,8 @@ function readStoredSource() {
 function persistSource(next) {
   $source.set(next)
   $forceEmbed.set(false)
+  clientProbeTick += 1
+  $clientProbeTick.set(clientProbeTick)
   remountFrame()
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -161,15 +175,69 @@ function asStatus(data) {
   return data
 }
 
-function webTarget(data) {
-  const web = data && data.web
-  const url = web && web.reachable_url
-  if (typeof url === 'string' && (url === STUDIO_WEB_URL || url === STUDIO_PREVIEW_URL)) {
-    return url
+function probeOne(url) {
+  if (typeof fetch !== 'function') return Promise.resolve(false)
+  if (url !== STUDIO_WEB_URL && url !== STUDIO_PREVIEW_URL) return Promise.resolve(false)
+  const Controller = typeof AbortController === 'function' ? AbortController : null
+  const controller = Controller ? new Controller() : null
+  const opts = {
+    method: 'GET',
+    mode: 'no-cors',
+    cache: 'no-store',
+    credentials: 'omit',
   }
-  if (web && web.dev_reachable) return STUDIO_WEB_URL
-  if (web && web.preview_reachable) return STUDIO_PREVIEW_URL
-  return null
+  if (controller) opts.signal = controller.signal
+  const attempt = fetch(url, opts)
+    .then((res) => {
+      // no-cors yields an opaque response (status 0) when the server answered.
+      // That is reachable. Connection refused rejects. Do not treat a false
+      // ok flag as down: an opaque response reports ok false anyway.
+      if (!res) return false
+      if (res.type === 'opaque' || res.status === 0) return true
+      return true
+    })
+    .catch(() => false)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => {
+      if (controller) {
+        try {
+          controller.abort()
+        } catch {
+          /* already settled */
+        }
+      }
+      finish(false)
+    }, CLIENT_PROBE_MS)
+    attempt.then((ok) => finish(ok))
+  })
+}
+
+async function probeLocalStudio() {
+  // Independent of plugin_api.py. Prefer studio-web, then vite preview.
+  // Do not probe the pack builder.
+  if (typeof fetch !== 'function') return { reachable: false, url: '' }
+  const devPromise = probeOne(STUDIO_WEB_URL)
+  const previewPromise = probeOne(STUDIO_PREVIEW_URL)
+  const devUp = await devPromise
+  if (devUp) return { reachable: true, url: STUDIO_WEB_URL }
+  const previewUp = await previewPromise
+  if (previewUp) return { reachable: true, url: STUDIO_PREVIEW_URL }
+  return { reachable: false, url: '' }
+}
+
+function clientReachableFrom(client) {
+  return Boolean(
+    client &&
+      client.reachable === true &&
+      (client.url === STUDIO_WEB_URL || client.url === STUDIO_PREVIEW_URL),
+  )
 }
 
 function apiBadgeLabel(status, backendDown) {
@@ -329,7 +397,7 @@ function Chrome({ source, embedUrl, badge, apiLabel }) {
   })
 }
 
-function EmbedFrame({ url, title }) {
+function EmbedFrame({ url, title, onRetry }) {
   const nonce = useValue($iframeNonce)
   const failed = useValue($iframeError)
   if (!url) {
@@ -357,7 +425,8 @@ function EmbedFrame({ url, title }) {
               size: 'sm',
               onClick: () => {
                 haptic('tap')
-                remountFrame()
+                if (typeof onRetry === 'function') onRetry()
+                else remountFrame()
               },
               children: 'Retry',
             }),
@@ -391,15 +460,18 @@ function EmbedFrame({ url, title }) {
 }
 
 function LocalMissing({ onRetry, apiLabel }) {
-  const title = 'Studio web is not reachable'
+  const label = apiLabel || 'API unread'
   const description =
-    'Nothing is listening on http://127.0.0.1:5174/ (studio-web) or http://127.0.0.1:4174/ (vite preview). From aigc-production-flow run ./scripts/dev-studio.sh all. This pane does not invent projects, jobs, or packs. API status (' +
-    (apiLabel || 'API unread') +
-    ') is a badge only — it does not block the iframe when studio-web is up. Quit Hermes Desktop and relaunch from the menu only if you want the optional probe badge. Reload desktop plugins is JS only.'
+    'Nothing answered http://127.0.0.1:5174/ or the preview fallback http://127.0.0.1:4174/. From aigc-production-flow run ./scripts/dev-studio.sh all. This pane does not invent projects, jobs, or packs. ' +
+    label +
+    ' is a badge only — the API badge is not a gate and does not mount a blank iframe.'
   return jsxs('div', {
     className: 'flex h-full flex-col items-center justify-center gap-3 p-8',
     children: [
-      jsx(ErrorState, { title, description }),
+      jsx(EmptyState, {
+        title: 'studio-web is not running on :5174',
+        description,
+      }),
       jsxs('div', {
         className: 'flex flex-wrap items-center justify-center gap-2',
         children: [
@@ -503,27 +575,91 @@ function LiveLocalFirst({ status, apiLabel }) {
   })
 }
 
+function CheckingStudio() {
+  return jsxs('div', {
+    className: 'flex flex-1 flex-col items-center justify-center gap-3',
+    children: [
+      jsx(GlyphSpinner, { size: 24 }),
+      jsx('div', {
+        className: 'text-sm text-(--ui-text-secondary)',
+        children: 'Checking local studio-web…',
+      }),
+    ],
+  })
+}
+
+function LocalStudio({ source, apiLabel, refetchStatus, isFetchingStatus }) {
+  const forceEmbed = useValue($forceEmbed)
+  const tick = useValue($clientProbeTick)
+  const { data: client, isLoading, isFetching, error } = useQuery({
+    queryKey: [ID, 'client-web', tick],
+    queryFn: () => probeLocalStudio(),
+    staleTime: 4 * 1000,
+    retry: 0,
+  })
+  const clientReachable = clientReachableFrom(client)
+  const probePending =
+    !forceEmbed &&
+    !clientReachable &&
+    !error &&
+    (isLoading || isFetching || client == null)
+
+  let embedUrl = ''
+  let badge = 'Local'
+  if (forceEmbed) {
+    embedUrl = STUDIO_WEB_URL
+    badge = 'Local'
+  } else if (clientReachable) {
+    embedUrl = client.url
+    badge = client.url === STUDIO_PREVIEW_URL ? 'Preview' : 'Local'
+  }
+
+  const onRetry = () => {
+    retryLocalProbe()
+    void refetchStatus()
+  }
+
+  if (!forceEmbed && !clientReachable) {
+    return jsxs('div', {
+      className: 'flex h-full min-h-0 flex-col bg-(--ui-bg)',
+      children: [
+        jsx(Chrome, { source, embedUrl: '', badge, apiLabel }),
+        jsx(Separator, {}),
+        probePending
+          ? jsx(CheckingStudio, {})
+          : jsx(LocalMissing, { apiLabel, onRetry }),
+      ],
+    })
+  }
+
+  return jsxs('div', {
+    className: cn('flex h-full min-h-0 flex-col bg-(--ui-bg)'),
+    children: [
+      jsx(Chrome, { source, embedUrl, badge, apiLabel }),
+      isFetchingStatus
+        ? jsx('div', {
+            className: 'px-4 text-[0.625rem] text-(--ui-text-quaternary)',
+            children: 'updating API badge',
+          })
+        : null,
+      jsx(Separator, {}),
+      jsx(EmbedFrame, { url: embedUrl, title: 'AIGC Studio', onRetry }),
+    ],
+  })
+}
+
 function StudioPane({ ctx }) {
   const source = useValue($source)
-  const forceEmbed = useValue($forceEmbed)
   const localMode = source === 'local'
-  const { data, isLoading, error, refetch, isFetching } = useQuery({
+  const { data, error, refetch, isFetching } = useQuery({
     queryKey: [ID, 'status'],
     queryFn: async () => ctx.rest('/status'),
     staleTime: 10 * 1000,
     retry: 1,
   })
   const status = asStatus(data)
-  const webUrl = webTarget(status)
   const backendDown = Boolean(error && !data)
   const apiLabel = apiBadgeLabel(status, backendDown)
-  const webDown = Boolean(localMode && status && status.web && status.web.reachable === false)
-  const probeUnread = Boolean(
-    localMode &&
-      !webUrl &&
-      !webDown &&
-      (backendDown || !status || !status.web || status.web.reachable == null),
-  )
 
   if (!localMode) {
     return jsxs('div', {
@@ -536,84 +672,11 @@ function StudioPane({ ctx }) {
     })
   }
 
-  let embedUrl = STUDIO_WEB_URL
-  let badge = 'Local'
-  if (forceEmbed) {
-    embedUrl = STUDIO_WEB_URL
-    badge = 'Local'
-  } else if (webUrl) {
-    embedUrl = webUrl
-    badge = webUrl === STUDIO_PREVIEW_URL ? 'Preview' : 'Local'
-  } else if (webDown) {
-    embedUrl = ''
-    badge = 'Local'
-  } else {
-    // Backend unread or status unknown — /status is optional. Do not hard-gate
-    // on the Python probe. Local still iframes 5174 until the iframe fails.
-    // API readiness is a badge and does not block studio-web.
-    embedUrl = STUDIO_WEB_URL
-    badge = 'Local'
-  }
-
-  if (localMode && isLoading && !forceEmbed && !backendDown) {
-    return jsxs('div', {
-      className: 'flex h-full min-h-0 flex-col bg-(--ui-bg)',
-      children: [
-        jsx(Chrome, { source, embedUrl: STUDIO_WEB_URL, badge: 'Local', apiLabel: 'API unread' }),
-        jsx(Separator, {}),
-        jsxs('div', {
-          className: 'flex flex-1 flex-col items-center justify-center gap-3',
-          children: [
-            jsx(GlyphSpinner, { size: 24 }),
-            jsx('div', {
-              className: 'text-sm text-(--ui-text-secondary)',
-              children: 'Checking local studio-web…',
-            }),
-          ],
-        }),
-      ],
-    })
-  }
-
-  // Confirmed studio-web-down only. A failed ctx.rest('/status') must not block Local.
-  // API down must not block Local either.
-  if (localMode && !forceEmbed && webDown) {
-    return jsxs('div', {
-      className: 'flex h-full min-h-0 flex-col bg-(--ui-bg)',
-      children: [
-        jsx(Chrome, { source, embedUrl: '', badge: 'Local', apiLabel }),
-        jsx(Separator, {}),
-        jsx(LocalMissing, {
-          apiLabel,
-          onRetry: () => {
-            $forceEmbed.set(false)
-            $iframeError.set(false)
-            void refetch()
-          },
-        }),
-      ],
-    })
-  }
-
-  return jsxs('div', {
-    className: cn('flex h-full min-h-0 flex-col bg-(--ui-bg)'),
-    children: [
-      jsx(Chrome, { source, embedUrl, badge, apiLabel }),
-      isFetching
-        ? jsx('div', {
-            className: 'px-4 text-[0.625rem] text-(--ui-text-quaternary)',
-            children: 'updating local probe',
-          })
-        : probeUnread
-          ? jsx('div', {
-              className: 'px-4 text-[0.625rem] text-(--ui-text-quaternary)',
-              children:
-                'Local probe offline — embedding 5174 anyway. API badge is not a gate. Quit and relaunch Desktop if you want the :5174/:8000 badge.',
-            })
-          : null,
-      jsx(Separator, {}),
-      jsx(EmbedFrame, { url: embedUrl, title: 'AIGC Studio' }),
-    ],
+  return jsx(LocalStudio, {
+    source,
+    apiLabel,
+    refetchStatus: refetch,
+    isFetchingStatus: isFetching,
   })
 }
 

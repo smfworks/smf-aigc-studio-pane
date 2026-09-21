@@ -59,19 +59,32 @@ def test_desktop_plugin_embeds_local_studio_and_ids():
     assert ".$source.get(" not in js
 
 
-def test_desktop_plugin_local_does_not_block_on_backend_or_api():
+def test_desktop_plugin_gates_iframe_on_client_probe():
     js = (ROOT / "desktop" / "plugin.js").read_text(encoding="utf-8")
-    assert "if (localMode && !forceEmbed && (backendDown || webDown))" not in js
-    assert "if (localMode && !forceEmbed && webDown)" in js
-    assert "if (localMode && isLoading && !forceEmbed && !backendDown)" in js
-    assert "Local probe offline" in js
-    assert "embedding 5174 anyway" in js
-    assert "Studio web is not reachable" in js
+    assert "async function probeLocalStudio" in js
+    assert "function probeOne" in js
+    assert "function clientReachableFrom" in js
+    assert "function retryLocalProbe" in js
+    assert "mode: 'no-cors'" in js
+    assert "AbortController" in js
+    assert "CLIENT_PROBE_MS = 2000" in js
+    assert "probeOne(STUDIO_WEB_URL)" in js
+    assert "probeOne(STUDIO_PREVIEW_URL)" in js
+    assert "queryFn: () => probeLocalStudio()" in js
+    assert "if (!forceEmbed && !clientReachable)" in js
+    assert "studio-web is not running on :5174" in js
+    assert "aigc-production-flow" in js
     assert "API badge is not a gate" in js
     assert "Embed 5174 anyway" in js
+    assert "$forceEmbed.set(true)" in js
+    assert "res.type === 'opaque'" in js
+    assert "res.ok" not in js
+    assert "embedding 5174 anyway" not in js
+    assert "Local probe offline" not in js
+    assert "if (localMode && !forceEmbed && (backendDown || webDown))" not in js
+    assert js.count("embedUrl = STUDIO_WEB_URL") == 1
     assert "Use Local" in js
     assert "Retry" in js
-    assert "embedUrl = STUDIO_WEB_URL" in js
     assert "ctx.rest('/status')" in js
     assert "API ready" in js
     assert "API down" in js
@@ -80,6 +93,7 @@ def test_desktop_plugin_local_does_not_block_on_backend_or_api():
     assert "Open Studio" in js
     assert "Copy dev command" in js
     assert "Pack builder" in js
+    assert "http://127.0.0.1:5173/" not in js
 
 
 def test_desktop_plugin_does_not_rewrite_studio_or_pack_builder():
@@ -264,6 +278,26 @@ def test_status_route_uses_injected_getter(monkeypatch):
     assert payload["api"]["reachable"] is False
 
 
+def test_agents_notes_do_not_iframe_a_dead_port():
+    md = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "studio-web is not running on :5174" in md
+    assert "Embed 5174 anyway" in md
+    assert "embed `:5174` anyway" not in md
+    assert "blank white" in md
+    assert "./scripts/dev-studio.sh all" in md
+
+
+def test_client_probe_behavior():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node, "node is required to execute the client probe fixture"
+    script = ROOT / "tests" / "client_probe_check.mjs"
+    proc = subprocess.run([node, str(script)], check=False, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
+
+
 def test_license_is_mit():
     text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     assert text.startswith("MIT License")
@@ -288,6 +322,10 @@ def test_readme_has_install_and_honesty():
     assert "local-first" in md
     assert "No hosted" in md or "None verified" in md
     assert "does not invent" in md
+    assert "studio-web is not running on :5174" in md
+    assert "blank" in md
+    assert "still embeds `:5174`" not in md
+    assert "embeds `:5174` anyway" not in md
     assert "smf-aigc-studio-pane.vercel.app" not in md
 
 
