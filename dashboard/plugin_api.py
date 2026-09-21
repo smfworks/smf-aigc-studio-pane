@@ -12,6 +12,10 @@ No hosted studio-web URL was verified. The Vercel app is the pack builder
 
 ``GET /status`` — local URLs plus an honest web/API probe.
 ``GET /health`` — ``{ status: ok, plugin }``.
+
+The desktop iframe gate is the client probe in ``desktop/plugin.js``
+(``:5174``, then ``:4174``). This process is the API badge. An unread
+``/status`` must not be treated as permission to iframe a closed port.
 """
 from __future__ import annotations
 

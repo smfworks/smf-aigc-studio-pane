@@ -13,8 +13,8 @@ Plugin id is `smf-aigc-studio-pane`. Sidebar label is **AIGC Studio**. The produ
 
 ## Do not
 
-- Do not treat ⌘K → Reload desktop plugins as a backend remount. That is JS only. Local still embeds `http://127.0.0.1:5174/` when `/status` is unread. Quit/relaunch is only for the optional probe badge — do not treat a missing backend as a reason to hide studio-web or to invent a project.
-- Do not hard-gate the iframe on the Python probe or on `/readyz`. If studio-web answers and the API does not, show the API badge and keep the iframe. If the probe is unread, embed `:5174` anyway.
+- Do not treat ⌘K → Reload desktop plugins as a backend remount. That is JS only. The JS probes `http://127.0.0.1:5174/` (then `:4174`) in the page and mounts the iframe only when that probe succeeds. Quit/relaunch is for the Python API badge (`plugin_api.py`). Do not invent a project when the probe fails.
+- Do not hard-gate the iframe on the Python `/status` probe or on `/readyz`. If the JS probe reaches studio-web and the API does not, show the API badge and keep the iframe. If the JS probe fails, show the empty state (`studio-web is not running on :5174`) and `./scripts/dev-studio.sh all` from `aigc-production-flow`. Do not iframe a connection-refused port — Electron paints that as a blank white frame and often does not fire iframe `onError`. **Embed 5174 anyway** is an escape hatch, not the default.
 - Do not run `hermes desktop` to relaunch if a packaged Electron binary already exists (`…/linux-unpacked/Hermes --no-sandbox`). `hermes desktop` rewrites the `.desktop` `Exec=` and can prompt for `chrome-sandbox` sudo.
 - Do not `hermes serve --stop` (kills every serve on the box). Do not kill this chat from inside the same Desktop window unless the user asked for a relaunch.
 - Do not port studio-web or the nine-gate pack builder into `plugin.js`. Embed local studio-web.
@@ -27,4 +27,4 @@ Plugin id is `smf-aigc-studio-pane`. Sidebar label is **AIGC Studio**. The produ
 
 ## After relaunch
 
-Sidebar **AIGC Studio**, the right-of-chat pane, or ⌘K → **Open AIGC Studio** / **Open AIGC Studio pane**. Default embed is Local `http://127.0.0.1:5174/`. Preview fallback is `http://127.0.0.1:4174/` only when the probe sees it. API badge reads `http://127.0.0.1:8000/readyz` and `/healthz`.
+Sidebar **AIGC Studio**, the right-of-chat pane, or ⌘K → **Open AIGC Studio** / **Open AIGC Studio pane**. Local embeds `http://127.0.0.1:5174/` only after the client probe reaches it. Preview fallback is `http://127.0.0.1:4174/` only when that probe sees it. API badge reads `http://127.0.0.1:8000/readyz` and `/healthz` and can stay unread or down without mounting a blank iframe.

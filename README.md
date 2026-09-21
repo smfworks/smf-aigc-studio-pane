@@ -18,14 +18,14 @@ Operator path: [docs/STUDIO.md](https://github.com/smfworks/aigc-production-flow
 
 - **Right pane** — AIGC Studio, docked to the right of the workspace (`760px`)
 - **Sidebar + palette** — AIGC Studio, plus ⌘K → **Open AIGC Studio** / **Open AIGC Studio pane**
-- **Local** (default) — iframe `http://127.0.0.1:5174/` (`./scripts/dev-studio.sh all` or `./scripts/dev-studio.sh web` in `aigc-production-flow`). If that port is down, the optional backend probe also checks Vite preview at `http://127.0.0.1:4174/`
-- **API badge** — `API ready` from `GET /readyz`, `API not ready` when `/healthz` answers but `/readyz` does not, `API down` when nothing answers on `:8000`, `API unread` when this plugin's Python probe is not mounted. The badge never blocks the iframe when studio-web is reachable
+- **Local** (default) — the page probes `http://127.0.0.1:5174/` (`./scripts/dev-studio.sh all` or `./scripts/dev-studio.sh web` in `aigc-production-flow`) and iframes it only when that probe answers. If `:5174` is closed, the same probe tries Vite preview at `http://127.0.0.1:4174/`. If neither answers, the pane shows an empty state instead of a blank iframe. **Embed 5174 anyway** is an escape hatch on that empty state, not the default
+- **API badge** — `API ready` from `GET /readyz`, `API not ready` when `/healthz` answers but `/readyz` does not, `API down` when nothing answers on `:8000`, `API unread` when this plugin's Python probe is not mounted. The badge never blocks the iframe when the client probe reached studio-web, and an unread Python probe does not mount the iframe by itself
 - **Live** — docs / GitHub / status only. There is no hosted studio-web URL in the product repo (Vercel deploys the pack builder). This tab does not iframe that app and does not invent a studio origin
 - **Open Studio** — the local studio-web URL in the browser
 - **Pack builder** — focuses the AIGC Flow pane (`/h3-capture`) when that plugin is installed; otherwise opens the [smf-h3-capture](https://github.com/smfworks/smf-h3-capture) repo. This pane does not embed port `5173`
 - **Studio docs / GitHub** — `docs/STUDIO.md` and the product repo
 - **Copy dev command** — `./scripts/dev-studio.sh all`
-- **Honesty** — if studio-web is confirmed down, the pane says so. A failed `GET /status` (Python probe not mounted) still embeds `:5174`. Projects, continuity rows, jobs, and media are whatever studio-web itself loaded. This pane never fabricates them
+- **Honesty** — if the client probe cannot reach studio-web, the pane says **studio-web is not running on :5174** and how to start it (`./scripts/dev-studio.sh all` from `aigc-production-flow`). It does not iframe a refused connection. Electron often paints that as a blank white frame and does not fire iframe `onError`. Projects, continuity rows, jobs, and media are whatever studio-web itself loaded. This pane never fabricates them
 
 Not in scope: Spark / Comfy / MiniMax calls, publishing likeness stills or MP4s, a generate button, or a second copy of the pack builder.
 
@@ -47,7 +47,7 @@ bash "${HERMES_HOME:-$HOME/.hermes}/plugins/smf-aigc-studio-pane/install.sh"
 
 `install.sh` enables the plugin on `$HOME/.hermes` **and** every `profiles/*/plugins` home Desktop may spawn, copies `desktop/plugin.js` into `$HOME/.hermes/desktop-plugins/smf-aigc-studio-pane/` (what packaged Electron actually loads), and tells you to **quit and relaunch Desktop**.
 
-**⌘K → Reload desktop plugins is JS only.** It does not mount `plugin_api.py`. Local still iframes `http://127.0.0.1:5174/` when that probe is unread — a failed `GET /status` is not a hard gate. Quit Desktop and relaunch from the menu only if you want the optional `:5174` / `:8000` badge. The badge is not required for the iframe.
+**⌘K → Reload desktop plugins is JS only.** It does not mount `plugin_api.py`. The page still probes `:5174` itself (then `:4174`). A failed `GET /status` is not a reason to iframe a dead port, and it is not required when that client probe succeeds. Quit Desktop and relaunch from the menu if you want the optional `:8000` API badge.
 
 Do **not** run `hermes desktop` to relaunch if you already have the packaged Linux binary. That command rewrites the `.desktop` `Exec=` and can prompt for `chrome-sandbox` sudo. Use the menu entry / `…/linux-unpacked/Hermes --no-sandbox`.
 
@@ -78,11 +78,11 @@ The pack builder pane is smf-h3-capture (AIGC Flow, :5173).
 
 | Tab | What you see | When to use |
 |---|---|---|
-| **Local** (default) | iframe `http://127.0.0.1:5174/` | Studio API + studio-web on this machine. |
-| Local fallback | iframe `http://127.0.0.1:4174/` | After `npm run preview` in `studio-web/`. Used only if `:5174` is down and preview answers. |
+| **Local** (default) | iframe `http://127.0.0.1:5174/` after the client probe answers | Studio-web on this machine. A refused port shows an empty state, not a white iframe. |
+| Local fallback | iframe `http://127.0.0.1:4174/` | After `npm run preview` in `studio-web/`. Used only if `:5174` is down and the client probe sees preview. |
 | **Live** | Empty state: studio is local-first, plus GitHub and `docs/STUDIO.md` | There is no verified hosted studio-web. This tab does not pretend otherwise. |
 
-Local studio-web is not started by this plugin. If both loopback web ports are confirmed closed, the pane says so — it does not fabricate a project. If the Python probe has not mounted yet, Local still embeds `:5174`.
+Local studio-web is not started by this plugin. The iframe mounts only after the in-page probe reaches `:5174` or `:4174`. If both are closed, the pane says studio-web is not running on `:5174` and does not fabricate a project. **Embed 5174 anyway** remains on that screen for a manual override.
 
 `/readyz` green means the studio API process reported ready (DB + worker mode, per `docs/STUDIO.md`). `/healthz` alone means the process answered liveness and is not the same as ready. Neither probe is a generate, and neither is rendered as job history.
 
@@ -129,7 +129,7 @@ The iframe uses the same sandbox as SMF H3 Capture (`allow-scripts allow-same-or
 python3 -m pytest tests/ -q
 ```
 
-Network is not required. URL allowlisting, probe honesty, and `plugin.js` ID/URL smoke checks run against fixtures.
+Network is not required. URL allowlisting, probe honesty, the client reachability gate, and `plugin.js` ID/URL smoke checks run against fixtures.
 
 ## License
 
