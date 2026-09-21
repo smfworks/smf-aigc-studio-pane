@@ -1,7 +1,7 @@
 {
   "name": "smf-aigc-studio-pane",
   "label": "AIGC Studio",
-  "description": "Embed local AIGC studio-web (127.0.0.1:5174) in a right-of-chat pane. Studio is local-first; the pack builder is a different pane.",
+  "description": "Embed local AIGC studio-web (127.0.0.1:5174) in a right-of-chat pane. Studio is local only (no Live tab); the pack builder is a different pane.",
   "icon": "Server",
   "version": "1.0.0",
   "tab": {

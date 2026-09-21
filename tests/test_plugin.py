@@ -48,15 +48,22 @@ def test_desktop_plugin_embeds_local_studio_and_ids():
     assert "from '@hermes/plugin-sdk'" in js
     assert "jsx" in js and "jsxs" in js
     assert "iframe" in js
-    assert "Live" in js and "Local" in js
+    assert "badge = 'Local'" in js
     assert "does not invent" in js
-    assert "local-first" in js
+    assert "Local only" in js
+    assert "No Live tab" in js
     assert "No hosted studio-web URL was verified" in js
-    assert "return 'local'" in js
+    assert "children: 'Live'" not in js
+    assert "SOURCE_KEY" not in js
+    assert "$source" not in js
+    assert "function SourceToggle" not in js
+    assert "function LiveLocalFirst" not in js
+    assert "persistSource" not in js
+    assert "Use Local" not in js
+    assert "local-first" not in js
     assert "vercel.app" not in js
     assert "http://127.0.0.1:5173/" not in js
     assert ".$iframeNonce.get(" not in js
-    assert ".$source.get(" not in js
 
 
 def test_desktop_plugin_gates_iframe_on_client_probe():
@@ -83,7 +90,6 @@ def test_desktop_plugin_gates_iframe_on_client_probe():
     assert "Local probe offline" not in js
     assert "if (localMode && !forceEmbed && (backendDown || webDown))" not in js
     assert js.count("embedUrl = STUDIO_WEB_URL") == 1
-    assert "Use Local" in js
     assert "Retry" in js
     assert "ctx.rest('/status')" in js
     assert "API ready" in js
@@ -244,7 +250,9 @@ def test_probe_skipped_does_not_claim_local_up():
     assert payload["api"]["ready"] is None
     assert payload["api"]["health"] is None
     assert payload["live_hosted"] is False
-    assert "local-first" in payload["live_note"]
+    assert "local only" in payload["live_note"]
+    assert "no Live tab" in payload["live_note"]
+    assert "local-first" not in payload["live_note"]
     assert "does not invent" in payload["honesty_note"]
 
 
@@ -285,6 +293,8 @@ def test_agents_notes_do_not_iframe_a_dead_port():
     assert "embed `:5174` anyway" not in md
     assert "blank white" in md
     assert "./scripts/dev-studio.sh all" in md
+    assert "no Live tab" in md
+    assert "Live vs Local" not in md
 
 
 def test_client_probe_behavior():
@@ -319,8 +329,10 @@ def test_readme_has_install_and_honesty():
     assert "AIGC Studio" in md
     assert "AIGC Flow" in md
     assert "./scripts/dev-studio.sh all" in md
-    assert "local-first" in md
-    assert "No hosted" in md or "None verified" in md
+    assert "local only" in md.lower() or "Local only" in md
+    assert "no Live tab" in md
+    assert "Live vs Local" not in md
+    assert "No hosted" in md or "None verified" in md or "**None.**" in md
     assert "does not invent" in md
     assert "studio-web is not running on :5174" in md
     assert "blank" in md

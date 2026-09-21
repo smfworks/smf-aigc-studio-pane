@@ -2,8 +2,8 @@
  * SMF AIGC Studio pane — embed local studio-web from aigc-production-flow.
  * Disk plugin: jsx/jsxs only. Never invent projects, jobs, packs, or media.
  * Plugin id: smf-aigc-studio-pane. Pack builder stays in smf-h3-capture.
- * No hosted studio-web URL was verified — default source is Local.
- * Local mounts an iframe only after a client probe reaches :5174 (or :4174).
+ * Local only. No Live tab. No hosted studio-web URL was verified.
+ * Mounts an iframe only after a client probe reaches :5174 (or :4174).
  * Python /status is the API badge. It is not the iframe gate.
  */
 import {
@@ -42,17 +42,13 @@ const PACK_BUILDER_ROUTE = '/h3-capture'
 const DEV_COMMAND = './scripts/dev-studio.sh all'
 const CLIENT_PROBE_MS = 2000
 
-const LIVE_NOTE =
-  'No hosted studio-web URL was verified. Studio is local-first. The Vercel deploy is the pack builder (AIGC Flow / smf-h3-capture), not this pane.'
 const HONESTY_NOTE =
-  'Embeds studio-web only. This pane does not invent projects, continuity, jobs, packs, or media. Default studio adapter is stub.'
+  'Local only. No hosted studio-web URL was verified. Embeds studio-web on this machine. This pane does not invent projects, continuity, jobs, packs, or media. Default studio adapter is stub.'
 const PACK_NOTE =
   'Pack builder is a different pane (smf-h3-capture). This pane does not embed it and does not sync packs.'
 
-const SOURCE_KEY = 'smf-aigc-studio-pane.source'
 const IFRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads'
 
-const $source = atom(readStoredSource())
 const $iframeError = atom(false)
 const $iframeNonce = atom(0)
 const $forceEmbed = atom(false)
@@ -72,31 +68,6 @@ function retryLocalProbe() {
   clientProbeTick += 1
   $clientProbeTick.set(clientProbeTick)
   remountFrame()
-}
-
-function readStoredSource() {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return 'local'
-    const raw = window.localStorage.getItem(SOURCE_KEY)
-    return raw === 'live' ? 'live' : 'local'
-  } catch {
-    return 'local'
-  }
-}
-
-function persistSource(next) {
-  $source.set(next)
-  $forceEmbed.set(false)
-  clientProbeTick += 1
-  $clientProbeTick.set(clientProbeTick)
-  remountFrame()
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(SOURCE_KEY, next)
-    }
-  } catch {
-    /* private mode */
-  }
 }
 
 function openExternal(url) {
@@ -250,35 +221,7 @@ function apiBadgeLabel(status, backendDown) {
   return 'API unread'
 }
 
-function SourceToggle({ source }) {
-  return jsxs('div', {
-    className: 'inline-flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) p-0.5',
-    children: [
-      jsx(Button, {
-        variant: source === 'live' ? 'default' : 'ghost',
-        size: 'sm',
-        className: 'h-7 text-xs',
-        onClick: () => {
-          haptic('tap')
-          persistSource('live')
-        },
-        children: 'Live',
-      }),
-      jsx(Button, {
-        variant: source === 'local' ? 'default' : 'ghost',
-        size: 'sm',
-        className: 'h-7 text-xs',
-        onClick: () => {
-          haptic('tap')
-          persistSource('local')
-        },
-        children: 'Local',
-      }),
-    ],
-  })
-}
-
-function Chrome({ source, embedUrl, badge, apiLabel }) {
+function Chrome({ embedUrl, badge, apiLabel }) {
   const copyHint = useValue($copyHint)
   const browserUrl = embedUrl || STUDIO_WEB_URL
   return jsxs('div', {
@@ -298,7 +241,6 @@ function Chrome({ source, embedUrl, badge, apiLabel }) {
           apiLabel
             ? jsx(Badge, { className: 'shrink-0 text-[0.625rem]', children: apiLabel })
             : null,
-          jsx(SourceToggle, { source }),
         ],
       }),
       jsx('div', {
@@ -430,15 +372,6 @@ function EmbedFrame({ url, title, onRetry }) {
               },
               children: 'Retry',
             }),
-            jsx(Button, {
-              variant: 'ghost',
-              size: 'sm',
-              onClick: () => {
-                haptic('tap')
-                persistSource('live')
-              },
-              children: 'Local-first note',
-            }),
           ],
         }),
       ],
@@ -489,87 +422,12 @@ function LocalMissing({ onRetry, apiLabel }) {
             size: 'sm',
             onClick: () => {
               haptic('tap')
-              persistSource('live')
-            },
-            children: 'Local-first note',
-          }),
-          jsx(Button, {
-            variant: 'ghost',
-            size: 'sm',
-            onClick: () => {
-              haptic('tap')
               $forceEmbed.set(true)
               remountFrame()
             },
             children: 'Embed 5174 anyway',
           }),
         ],
-      }),
-    ],
-  })
-}
-
-function LiveLocalFirst({ status, apiLabel }) {
-  const webUp = Boolean(status && status.web && status.web.reachable === true)
-  const detail = webUp
-    ? 'Local studio-web answered the probe. Switch to Local to embed http://127.0.0.1:5174/. This note is not a hosted studio.'
-    : LIVE_NOTE + ' Run ./scripts/dev-studio.sh all, then use Local. Empty here means no hosted URL — not an empty project.'
-  return jsxs('div', {
-    className: 'flex h-full flex-col items-center justify-center gap-3 p-8',
-    children: [
-      jsx(EmptyState, {
-        title: 'Studio is local-first',
-        description: detail,
-      }),
-      jsx('div', {
-        className: 'max-w-md text-center text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary)',
-        children:
-          'Phase 9 studio-web (when Local is up) is projects, episodes, pack diff, identity, continuity, jobs, and sign-off. It does not invent those records in this pane. Pack builder stays in AIGC Flow.',
-      }),
-      jsxs('div', {
-        className: 'flex flex-wrap items-center justify-center gap-2',
-        children: [
-          jsx(Button, {
-            variant: 'ghost',
-            size: 'sm',
-            onClick: () => {
-              haptic('tap')
-              persistSource('local')
-            },
-            children: 'Use Local',
-          }),
-          jsx(Button, {
-            variant: 'ghost',
-            size: 'sm',
-            onClick: () => {
-              haptic('tap')
-              openExternal(GITHUB_URL)
-            },
-            children: 'GitHub',
-          }),
-          jsx(Button, {
-            variant: 'ghost',
-            size: 'sm',
-            onClick: () => {
-              haptic('tap')
-              openExternal(DOCS_URL)
-            },
-            children: 'Studio docs',
-          }),
-          jsx(Button, {
-            variant: 'ghost',
-            size: 'sm',
-            onClick: () => {
-              haptic('tap')
-              openExternal(PACK_BUILDER_REPO)
-            },
-            children: 'Pack builder repo',
-          }),
-        ],
-      }),
-      jsx('div', {
-        className: 'text-[0.625rem] text-(--ui-text-quaternary)',
-        children: apiLabel + ' · ' + API_ORIGIN + ' · ' + READYZ_URL,
       }),
     ],
   })
@@ -588,7 +446,7 @@ function CheckingStudio() {
   })
 }
 
-function LocalStudio({ source, apiLabel, refetchStatus, isFetchingStatus }) {
+function LocalStudio({ apiLabel, refetchStatus, isFetchingStatus }) {
   const forceEmbed = useValue($forceEmbed)
   const tick = useValue($clientProbeTick)
   const { data: client, isLoading, isFetching, error } = useQuery({
@@ -623,7 +481,7 @@ function LocalStudio({ source, apiLabel, refetchStatus, isFetchingStatus }) {
     return jsxs('div', {
       className: 'flex h-full min-h-0 flex-col bg-(--ui-bg)',
       children: [
-        jsx(Chrome, { source, embedUrl: '', badge, apiLabel }),
+        jsx(Chrome, { embedUrl: '', badge, apiLabel }),
         jsx(Separator, {}),
         probePending
           ? jsx(CheckingStudio, {})
@@ -635,7 +493,7 @@ function LocalStudio({ source, apiLabel, refetchStatus, isFetchingStatus }) {
   return jsxs('div', {
     className: cn('flex h-full min-h-0 flex-col bg-(--ui-bg)'),
     children: [
-      jsx(Chrome, { source, embedUrl, badge, apiLabel }),
+      jsx(Chrome, { embedUrl, badge, apiLabel }),
       isFetchingStatus
         ? jsx('div', {
             className: 'px-4 text-[0.625rem] text-(--ui-text-quaternary)',
@@ -649,8 +507,6 @@ function LocalStudio({ source, apiLabel, refetchStatus, isFetchingStatus }) {
 }
 
 function StudioPane({ ctx }) {
-  const source = useValue($source)
-  const localMode = source === 'local'
   const { data, error, refetch, isFetching } = useQuery({
     queryKey: [ID, 'status'],
     queryFn: async () => ctx.rest('/status'),
@@ -661,19 +517,7 @@ function StudioPane({ ctx }) {
   const backendDown = Boolean(error && !data)
   const apiLabel = apiBadgeLabel(status, backendDown)
 
-  if (!localMode) {
-    return jsxs('div', {
-      className: 'flex h-full min-h-0 flex-col bg-(--ui-bg)',
-      children: [
-        jsx(Chrome, { source, embedUrl: '', badge: 'Local-first', apiLabel }),
-        jsx(Separator, {}),
-        jsx(LiveLocalFirst, { status, apiLabel }),
-      ],
-    })
-  }
-
   return jsx(LocalStudio, {
-    source,
     apiLabel,
     refetchStatus: refetch,
     isFetchingStatus: isFetching,

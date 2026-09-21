@@ -1,5 +1,5 @@
 name: smf-aigc-studio-pane
 version: "1.0"
-description: Hermes Desktop pane — embeds local AIGC studio-web (projects, continuity, jobs). Local-first; no hosted studio URL.
+description: Hermes Desktop pane — embeds local AIGC studio-web (projects, continuity, jobs). Local only; no Live tab and no hosted studio URL.
 author: SMF Works
 kind: standalone

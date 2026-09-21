@@ -50,8 +50,9 @@ PACK_BUILDER_URL = "http://127.0.0.1:5173/"
 DEV_COMMAND = "./scripts/dev-studio.sh all"
 LIVE_HOSTED = False
 LIVE_NOTE = (
-    "No hosted studio-web URL was verified. Studio is local-first. "
-    "The Vercel deploy is the pack builder (smf-h3-capture), not this pane."
+    "No hosted studio-web URL was verified. Studio is local only. "
+    "There is no Live tab. The Vercel deploy is the pack builder "
+    "(smf-h3-capture), not this pane."
 )
 HONESTY_NOTE = (
     "This pane embeds studio-web. It does not invent projects, continuity, "

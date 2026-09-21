@@ -10,7 +10,7 @@ This is the companion to [smf-h3-capture](https://github.com/smfworks/smf-h3-cap
 | Embeds | `studio-web` | Vite pack builder in `app/` |
 | Local | `http://127.0.0.1:5174/` | `http://127.0.0.1:5173/` |
 | API | `http://127.0.0.1:8000/` (`/healthz`, `/readyz`) | none (packs stay in the SPA) |
-| Hosted | **None verified.** Live is a local-first note | `https://aigc-production-flow.vercel.app` |
+| Hosted | **None.** Local only. No Live tab. Vercel is the pack builder | `https://aigc-production-flow.vercel.app` |
 
 Operator path: [docs/STUDIO.md](https://github.com/smfworks/aigc-production-flow/blob/main/docs/STUDIO.md).
 
@@ -18,9 +18,8 @@ Operator path: [docs/STUDIO.md](https://github.com/smfworks/aigc-production-flow
 
 - **Right pane** — AIGC Studio, docked to the right of the workspace (`760px`)
 - **Sidebar + palette** — AIGC Studio, plus ⌘K → **Open AIGC Studio** / **Open AIGC Studio pane**
-- **Local** (default) — the page probes `http://127.0.0.1:5174/` (`./scripts/dev-studio.sh all` or `./scripts/dev-studio.sh web` in `aigc-production-flow`) and iframes it only when that probe answers. If `:5174` is closed, the same probe tries Vite preview at `http://127.0.0.1:4174/`. If neither answers, the pane shows an empty state instead of a blank iframe. **Embed 5174 anyway** is an escape hatch on that empty state, not the default
+- **Local studio-web** — the only source. The page probes `http://127.0.0.1:5174/` (`./scripts/dev-studio.sh all` or `./scripts/dev-studio.sh web` in `aigc-production-flow`) and iframes it only when that probe answers. If `:5174` is closed, the same probe tries Vite preview at `http://127.0.0.1:4174/`. If neither answers, the pane shows an empty state instead of a blank iframe. **Embed 5174 anyway** is an escape hatch on that empty state, not the default. There is no Live tab
 - **API badge** — `API ready` from `GET /readyz`, `API not ready` when `/healthz` answers but `/readyz` does not, `API down` when nothing answers on `:8000`, `API unread` when this plugin's Python probe is not mounted. The badge never blocks the iframe when the client probe reached studio-web, and an unread Python probe does not mount the iframe by itself
-- **Live** — docs / GitHub / status only. There is no hosted studio-web URL in the product repo (Vercel deploys the pack builder). This tab does not iframe that app and does not invent a studio origin
 - **Open Studio** — the local studio-web URL in the browser
 - **Pack builder** — focuses the AIGC Flow pane (`/h3-capture`) when that plugin is installed; otherwise opens the [smf-h3-capture](https://github.com/smfworks/smf-h3-capture) repo. This pane does not embed port `5173`
 - **Studio docs / GitHub** — `docs/STUDIO.md` and the product repo
@@ -69,20 +68,23 @@ Enable on $HOME/.hermes and every profiles/*/ that already has a plugins dir.
 Copy desktop/plugin.js to $HOME/.hermes/desktop-plugins/smf-aigc-studio-pane/.
 Do not run hermes desktop. Do not kill this chat from inside it.
 Tell me to quit Hermes Desktop and relaunch from the menu so plugin_api.py mounts.
-Embed Local http://127.0.0.1:5174/ from aigc-production-flow studio-web.
+This pane is local only. There is no Live tab.
+Embed http://127.0.0.1:5174/ from aigc-production-flow studio-web.
 Do not invent a hosted studio URL. Do not port studio-web or the pack builder into plugin.js.
 The pack builder pane is smf-h3-capture (AIGC Flow, :5173).
 ```
 
-## Live vs Local
+## Local only
 
-| Tab | What you see | When to use |
-|---|---|---|
-| **Local** (default) | iframe `http://127.0.0.1:5174/` after the client probe answers | Studio-web on this machine. A refused port shows an empty state, not a white iframe. |
-| Local fallback | iframe `http://127.0.0.1:4174/` | After `npm run preview` in `studio-web/`. Used only if `:5174` is down and the client probe sees preview. |
-| **Live** | Empty state: studio is local-first, plus GitHub and `docs/STUDIO.md` | There is no verified hosted studio-web. This tab does not pretend otherwise. |
+There is no Live tab and no hosted studio-web URL. Vercel deploys the pack builder, which stays in **AIGC Flow**. This pane embeds studio-web on this machine.
 
-Local studio-web is not started by this plugin. The iframe mounts only after the in-page probe reaches `:5174` or `:4174`. If both are closed, the pane says studio-web is not running on `:5174` and does not fabricate a project. **Embed 5174 anyway** remains on that screen for a manual override.
+| What you see | When |
+|---|---|
+| iframe `http://127.0.0.1:5174/` after the client probe answers | Studio-web on this machine (`./scripts/dev-studio.sh all` or `web`). A refused port shows an empty state, not a white iframe. |
+| iframe `http://127.0.0.1:4174/` | After `npm run preview` in `studio-web/`. Used only if `:5174` is down and the client probe sees preview. |
+| Empty state: **studio-web is not running on :5174** | Neither port answered. **Retry** probes again. **Embed 5174 anyway** is the manual override, not the default. |
+
+Local studio-web is not started by this plugin. The iframe mounts only after the in-page probe reaches `:5174` or `:4174`. If both are closed, the pane says studio-web is not running on `:5174` and does not fabricate a project.
 
 `/readyz` green means the studio API process reported ready (DB + worker mode, per `docs/STUDIO.md`). `/healthz` alone means the process answered liveness and is not the same as ready. Neither probe is a generate, and neither is rendered as job history.
 
@@ -93,7 +95,7 @@ Local studio-web is not started by this plugin. The iframe mounts only after the
 - Projects, ordered episodes, pack revisions, and pack diff
 - Identity store (approve, unapprove, keyword edit) and the continuity panel
 - Review sign-off, comments, shots, and a job center
-- Stub adapters by default — unset Comfy hooks stay stub / not live
+- Stub adapters by default — unset Comfy hooks stay stub
 - Hop-1 desk and a playlist scrubber (a stub receipt is metadata, not an MP4)
 - Writer / art / editor / producer roles, presence, multi-org lite, notifications, backup
 
