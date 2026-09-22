@@ -347,3 +347,328 @@ def test_manifest_label():
     assert manifest["label"] == "AIGC Studio"
     assert manifest["tab"]["path"] == "/aigc-studio"
     assert manifest["api"] == "plugin_api.py"
+
+
+RUN = "11111111-1111-4111-8111-111111111111"
+OTHER = "22222222-2222-4222-8222-222222222222"
+
+
+def _write_brief(root, run=RUN, *, produced=False, called=False, hermes=False, drop_dir=None, with_film=False, path=None):
+    drop = root / run
+    drop.mkdir(parents=True)
+    jobs = [
+        {
+            "order": 1,
+            "kind": "still-sheet",
+            "subject": "lead",
+            "adapter_label": "stub",
+            "note": "Character sheet before any plate.",
+        },
+        {
+            "order": 2,
+            "kind": "clip-hop1",
+            "take": "A",
+            "adapter_label": "stub (lane not live)",
+            "note": "Hop-1 after plates.",
+        },
+        {
+            "order": 3,
+            "kind": "stitch",
+            "adapter_label": "awaiting stitch",
+            "produced_mp4": produced,
+            "called_comfy": False,
+            "note": "Final job after hop-1 clips. Leave awaiting stitch.",
+        },
+    ]
+    honesty = {
+        "called_comfy": called,
+        "hermes_ran": hermes,
+        "produced_mp4": produced,
+        "still_live": False,
+        "clip_live": False,
+        "still_label": "stub",
+        "clip_label": "stub (lane not live)",
+        "note": "Studio wrote this brief. Hermes has not been invoked. Comfy has not been called.",
+    }
+    if path:
+        honesty["path"] = path
+    (drop / "agent-brief.json").write_text(json.dumps({"jobs": jobs, "honesty": honesty}), encoding="utf-8")
+    (drop / "hermes-handoff.json").write_text(
+        json.dumps(
+            {
+                "kind": "aigc-hermes-handoff",
+                "agent_run_id": run,
+                "deep_link": "hermes://aigc/brief?run=" + run,
+                "honesty": honesty,
+            }
+        ),
+        encoding="utf-8",
+    )
+    latest = {
+        "agent_run_id": run,
+        "drop_dir": drop_dir if drop_dir is not None else str(drop),
+        "deep_link": "hermes://aigc/brief?run=" + run,
+        "open": "hermes-handoff.json",
+        "called_comfy": called,
+        "hermes_ran": hermes,
+        "produced_mp4": produced,
+        "written_at": "2026-09-22T00:00:00+00:00",
+    }
+    (root / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+    if with_film:
+        (drop / "stitch.mp4").write_bytes(b"bytes-on-disk")
+    return drop
+
+
+def test_latest_brief_lists_jobs_ending_in_stitch(tmp_path):
+    _write_brief(tmp_path)
+    payload = api.collect_handoff(roots=[tmp_path], probe_studio=False)
+    assert payload["ok"] is True
+    assert payload["badge"] == "Latest brief"
+    assert payload["state"] == "brief"
+    assert payload["source"] == "file"
+    assert payload["agent_run_id"] == RUN
+    assert payload["deep_link"] == "hermes://aigc/brief?run=" + RUN
+    assert payload["called_comfy"] is False
+    assert payload["hermes_ran"] is False
+    assert payload["produced_mp4"] is False
+    assert payload["finished_film"] is False
+    assert payload["film_on_disk"] is False
+    kinds = [job["kind"] for job in payload["jobs"]]
+    assert kinds[-1] == "stitch"
+    assert "still-sheet" in kinds
+    assert payload["honesty"]["still_label"] == "stub"
+    assert "awaiting stitch" in payload["stitch_note"] or "stitch" in payload["stitch_note"].lower()
+    assert "pwned" not in json.dumps(payload)
+
+
+def test_video_file_without_produced_flag_is_not_a_finished_film(tmp_path):
+    _write_brief(tmp_path, with_film=True, produced=False, called=False, hermes=False)
+    payload = api.collect_handoff(roots=[tmp_path], probe_studio=False)
+    assert payload["produced_mp4"] is False
+    assert payload["called_comfy"] is False
+    assert payload["hermes_ran"] is False
+    assert payload["film_on_disk"] is False
+    assert payload["finished_film"] is False
+
+
+def test_produced_flag_without_file_is_not_a_finished_film(tmp_path):
+    _write_brief(tmp_path, produced=True)
+    payload = api.collect_handoff(roots=[tmp_path], probe_studio=False)
+    assert payload["produced_mp4"] is True
+    assert payload["film_on_disk"] is False
+    assert payload["finished_film"] is False
+    assert payload["called_comfy"] is False
+    assert payload["hermes_ran"] is False
+
+
+def test_produced_flag_and_file_on_disk_is_a_finished_film(tmp_path):
+    _write_brief(tmp_path, produced=True, with_film=True)
+    payload = api.collect_handoff(roots=[tmp_path], probe_studio=False)
+    assert payload["produced_mp4"] is True
+    assert payload["film_on_disk"] is True
+    assert payload["finished_film"] is True
+    assert payload["called_comfy"] is False
+    assert payload["hermes_ran"] is False
+
+
+def test_drop_dir_outside_roots_is_not_read(tmp_path):
+    root = tmp_path / "handoff"
+    root.mkdir()
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "agent-brief.json").write_text(
+        json.dumps({"jobs": [{"order": 1, "kind": "pwned", "called_comfy": True}], "honesty": {"called_comfy": True}}),
+        encoding="utf-8",
+    )
+    _write_brief(root, drop_dir=str(secret))
+    payload = api.collect_handoff(roots=[root], probe_studio=False)
+    blob = json.dumps(payload)
+    assert "pwned" not in blob
+    assert payload["called_comfy"] is False
+    assert payload["jobs"][-1]["kind"] == "stitch"
+    assert payload["agent_run_id"] == RUN
+
+
+def test_pack_zip_handoff_list_is_not_a_brief(tmp_path):
+    def getter(url, headers=None):
+        assert headers and headers.get("Authorization") == "Bearer local-dev-token"
+        if url.endswith("/healthz") or url.endswith("/readyz"):
+            return 200, '{"ok": true}', {}
+        if url.endswith("/api/handoffs"):
+            body = [
+                {
+                    "id": "pack-1",
+                    "filename": "pack.zip",
+                    "auto_generate": False,
+                    "honesty": "Builder Open in Studio stages a pack zip.",
+                }
+            ]
+            return 200, json.dumps(body), {}
+        raise OSError("no run")
+
+    payload = api.collect_handoff(roots=[tmp_path], getter=getter, probe_studio=True)
+    assert payload["state"] == "empty"
+    assert payload["badge"] == "No handoff yet"
+    assert payload["agent_run_id"] == ""
+    assert payload["jobs"] == []
+    assert payload["called_comfy"] is False
+    assert payload["finished_film"] is False
+    assert "pack.zip" not in json.dumps(payload["jobs"])
+
+
+def test_studio_agent_run_overlays_flags_without_inventing_a_film(tmp_path):
+    drop = _write_brief(tmp_path)
+
+    def getter(url, headers=None):
+        assert headers["Authorization"].startswith("Bearer ")
+        if url.endswith("/healthz"):
+            return 200, '{"ok": true}', {}
+        if url.endswith("/readyz"):
+            return 200, '{"ok": true}', {}
+        if url.endswith("/api/handoffs"):
+            return 404, "not a list", {}
+        if url.endswith("/api/agent-runs/" + RUN):
+            return 200, json.dumps(
+                {
+                    "id": RUN,
+                    "wizard_id": "wiz",
+                    "deep_link": "hermes://aigc/brief?run=" + RUN,
+                    "drop_dir": str(drop),
+                    "called_comfy": True,
+                    "hermes_ran": False,
+                    "honesty_note": "A job result says Comfy was called.",
+                    "stitch_state": "awaiting_stitch",
+                    "steps": [
+                        {
+                            "order": 1,
+                            "kind": "still-sheet",
+                            "subject": "lead",
+                            "status": "succeeded",
+                            "called_comfy": True,
+                            "adapter_label": "live",
+                        },
+                        {
+                            "order": 3,
+                            "kind": "stitch",
+                            "status": "awaiting_stitch",
+                            "produced_mp4": False,
+                            "called_comfy": False,
+                            "note": "Stitch plan only.",
+                        },
+                    ],
+                }
+            ), {}
+        raise OSError(url)
+
+    payload = api.collect_handoff(roots=[tmp_path], getter=getter, probe_studio=True)
+    assert payload["source"] == "studio-api+file"
+    assert payload["studio_api"] == "ok"
+    assert payload["called_comfy"] is True
+    assert payload["hermes_ran"] is False
+    assert payload["produced_mp4"] is False
+    assert payload["finished_film"] is False
+    sheet = next(job for job in payload["jobs"] if job["kind"] == "still-sheet")
+    assert sheet["status"] == "succeeded"
+    assert payload["jobs"][-1]["kind"] == "stitch"
+
+
+def test_studio_down_still_reads_latest_json(tmp_path):
+    _write_brief(tmp_path)
+
+    def getter(url, headers=None):
+        raise OSError("connection refused")
+
+    payload = api.collect_handoff(roots=[tmp_path], getter=getter, probe_studio=True)
+    assert payload["badge"] == "Latest brief"
+    assert payload["source"] == "file"
+    assert payload["studio_api"] == "down"
+    assert payload["called_comfy"] is False
+    assert payload["hermes_ran"] is False
+
+
+def test_requested_run_does_not_return_a_different_brief(tmp_path):
+    _write_brief(tmp_path, run=RUN)
+    payload = api.collect_handoff(run=OTHER, roots=[tmp_path], probe_studio=False)
+    assert payload["state"] == "empty"
+    assert payload["badge"] == "No handoff yet"
+    assert payload["agent_run_id"] == ""
+    assert OTHER in payload["honesty"]["note"]
+
+
+def test_invalid_run_id_is_rejected():
+    payload = api.collect_handoff(run="../etc/passwd", roots=[], probe_studio=False)
+    assert payload["state"] == "empty"
+    assert payload["jobs"] == []
+    assert payload["finished_film"] is False
+
+
+def test_agent_run_url_allowlist_stays_narrow():
+    run_url = "http://127.0.0.1:8000/api/agent-runs/" + RUN
+    assert api.local_url_allowed(run_url) is True
+    assert api.local_url_allowed("http://127.0.0.1:8000/api/handoffs") is True
+    assert api.local_url_allowed("http://127.0.0.1:8000/api/handoffs/" + RUN) is False
+    assert api.local_url_allowed("http://127.0.0.1:8000/api/jobs") is False
+    assert api.local_url_allowed("http://127.0.0.1:8000/api/agent-runs/../jobs") is False
+    assert api.local_url_allowed("http://127.0.0.1:8000/api/agent-runs/") is False
+    assert api.local_url_allowed("http://127.0.0.1:8000/api/meta") is False
+
+
+def test_handoff_root_env_is_first(monkeypatch, tmp_path):
+    monkeypatch.setenv("HANDOFF_ROOT", str(tmp_path / "from-env"))
+    monkeypatch.delenv("STUDIO_HANDOFF_ROOT", raising=False)
+    monkeypatch.delenv("STUDIO_HERMES_DROP", raising=False)
+    monkeypatch.delenv("STUDIO_MEDIA_ROOT", raising=False)
+    roots = api.default_handoff_roots()
+    assert roots[0] == tmp_path / "from-env"
+    assert Path.home() / ".hermes" / "aigc" in roots
+
+
+def test_desktop_plugin_surfaces_handoff_brief():
+    js = (ROOT / "desktop" / "plugin.js").read_text(encoding="utf-8")
+    assert "Open latest brief" in js
+    assert "Copy deep link" in js
+    assert "Copy drop path" in js
+    assert "Focus Studio Create" in js
+    assert "Open AIGC handoff brief" in js
+    assert "hermes://aigc/brief" in js
+    assert "refetchInterval: 8000" in js
+    assert "ctx.rest(path)" in js
+    assert "'/handoff'" in js or '"/handoff"' in js
+    assert "called_comfy" in js
+    assert "hermes_ran" in js
+    assert "produced_mp4" in js
+    assert "No finished film" in js
+    assert "No handoff yet" in js
+    assert "Latest brief" in js
+    assert "API unread" in js
+    assert ".mp4" not in js
+    assert "/api/jobs" not in js
+    assert "generate-ok" not in js
+
+
+def test_handoff_helpers_behavior():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node, "node is required to execute the handoff fixture"
+    script = ROOT / "tests" / "handoff_check.mjs"
+    proc = subprocess.run([node, str(script)], check=False, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
+
+
+def test_readme_and_agents_document_handoff():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    for text in (readme, agents):
+        assert "hermes://aigc/brief?run=" in text
+        assert "Open latest brief" in text
+        assert "produced_mp4" in text
+        assert "called_comfy" in text
+        assert "latest.json" in text
+    assert "Open AIGC handoff brief" in readme
+    assert "Open AIGC handoff brief" in agents
+    assert "GET /handoff" in readme
+    assert "Do not start Hermes" in agents
+    assert "No handoff yet" in agents

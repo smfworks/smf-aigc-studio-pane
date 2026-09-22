@@ -5,6 +5,8 @@
  * Local only. No Live tab. No hosted studio-web URL was verified.
  * Mounts an iframe only after a client probe reaches :5174 (or :4174).
  * Python /status is the API badge. It is not the iframe gate.
+ * A strip above the iframe watches the Hermes brief (latest.json / Studio API).
+ * It does not start Hermes or Comfy, and it does not invent a film.
  */
 import {
   Badge,
@@ -46,6 +48,9 @@ const HONESTY_NOTE =
   'Local only. No hosted studio-web URL was verified. Embeds studio-web on this machine. This pane does not invent projects, continuity, jobs, packs, or media. Default studio adapter is stub.'
 const PACK_NOTE =
   'Pack builder is a different pane (smf-h3-capture). This pane does not embed it and does not sync packs.'
+const HANDOFF_NOTE =
+  'Studio writes the brief. This pane does not start Hermes and does not call Comfy. called_comfy and hermes_ran stay false until the brief says they are true. A file on disk is not a run. No finished film unless produced_mp4 is true and that file is on disk.'
+const RUN_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 
 const IFRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads'
 
@@ -54,8 +59,14 @@ const $iframeNonce = atom(0)
 const $forceEmbed = atom(false)
 const $copyHint = atom('')
 const $clientProbeTick = atom(0)
+const $briefOpen = atom(false)
+const $briefRun = atom('')
+const $handoffHint = atom('')
+const $createFocus = atom(0)
 let iframeNonce = 0
 let clientProbeTick = 0
+let createFocus = 0
+let locationBriefRead = false
 
 function remountFrame() {
   iframeNonce += 1
@@ -221,6 +232,382 @@ function apiBadgeLabel(status, backendDown) {
   return 'API unread'
 }
 
+// HANDOFF_PURE_START
+function parseBriefLink(value) {
+  if (!value || typeof value !== 'string') return null
+  const trimmed = value.trim()
+  const match = trimmed.match(/^hermes:\/\/aigc\/brief\/?\?run=([0-9a-fA-F-]{36})(?:&|$)/)
+  if (match && RUN_ID_RE.test(match[1])) return { run: match[1] }
+  try {
+    const url = new URL(trimmed)
+    const hostName = (url.hostname || '').toLowerCase()
+    const path = url.pathname || ''
+    if (
+      url.protocol === 'hermes:' &&
+      hostName === 'aigc' &&
+      (path === '/brief' || path === '/brief/')
+    ) {
+      const run = url.searchParams.get('run') || ''
+      if (RUN_ID_RE.test(run)) return { run: run }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function handoffBadge(payload, requestFailed) {
+  if (requestFailed || !payload || typeof payload !== 'object') return 'API unread'
+  if (payload.badge === 'Latest brief' && payload.agent_run_id) return 'Latest brief'
+  if (payload.badge === 'No handoff yet' || payload.state === 'empty') return 'No handoff yet'
+  if (payload.badge === 'API unread' || payload.state === 'unread' || payload.ok === false) {
+    return 'API unread'
+  }
+  if (payload.state === 'brief' && payload.agent_run_id) return 'Latest brief'
+  return 'No handoff yet'
+}
+
+function filmClaim(row) {
+  const produced = Boolean(row && row.produced_mp4 === true)
+  const onDisk = Boolean(row && row.film_on_disk === true)
+  if (produced && onDisk) {
+    return 'Finished film: produced_mp4 is true and the file is on disk.'
+  }
+  if (produced && !onDisk) {
+    return 'produced_mp4 is true, but the file is not on disk. This is not a finished film.'
+  }
+  return 'No finished film. produced_mp4 is false. Stitch stays a plan until a real file exists. This pane does not invent one.'
+}
+
+function flagClaim(row) {
+  const called = Boolean(row && row.called_comfy === true)
+  const ran = Boolean(row && row.hermes_ran === true)
+  return {
+    called_comfy: called,
+    hermes_ran: ran,
+    called_line: called
+      ? 'called_comfy is true on this brief.'
+      : 'called_comfy is false. A file on disk is not a Comfy run.',
+    hermes_line: ran
+      ? 'hermes_ran is true on this brief.'
+      : 'hermes_ran is false. Studio did not start Hermes. This pane does not start it either.',
+  }
+}
+
+function laneClaim(honesty) {
+  const row = honesty && typeof honesty === 'object' ? honesty : {}
+  const still = row.still_label || (row.still_live === true ? 'live' : 'stub')
+  const clip = row.clip_label || (row.clip_live === true ? 'live' : 'stub')
+  return 'Stills ' + still + '. Clips ' + clip + '. Unset lanes are not live.'
+}
+// HANDOFF_PURE_END
+
+function withCreateHash(url) {
+  if (!url) return ''
+  const base = url.endsWith('/') ? url : url + '/'
+  return base + '#/create'
+}
+
+function readLocationBriefOnce() {
+  if (locationBriefRead) return
+  locationBriefRead = true
+  if (typeof window === 'undefined' || !window.location) return
+  const href = String(window.location.href || '')
+  const fromLink = parseBriefLink(href)
+  if (fromLink) {
+    $briefRun.set(fromLink.run)
+    $briefOpen.set(true)
+    return
+  }
+  try {
+    const run = new URL(href).searchParams.get('run') || ''
+    if (RUN_ID_RE.test(run)) {
+      $briefRun.set(run)
+      $briefOpen.set(true)
+    }
+  } catch {
+    /* not a url */
+  }
+}
+
+function deliverBriefLink(url) {
+  const parsed = parseBriefLink(typeof url === 'string' ? url : (url && url.url) || '')
+  if (!parsed) return false
+  $briefRun.set(parsed.run)
+  $briefOpen.set(true)
+  try {
+    host.navigate(ROUTE)
+  } catch {
+    /* palette command still opens the pane */
+  }
+  return true
+}
+
+function bindBriefProtocol() {
+  const bind = (target, method, args) => {
+    try {
+      if (target && typeof target[method] === 'function') target[method].apply(target, args)
+    } catch {
+      /* this host has no protocol hook */
+    }
+  }
+  bind(host, 'registerProtocol', ['hermes', deliverBriefLink])
+  bind(host, 'handleProtocol', ['hermes://aigc/brief', deliverBriefLink])
+  bind(host, 'on', ['open-url', deliverBriefLink])
+  bind(host, 'on', ['deep-link', deliverBriefLink])
+  bind(host, 'on', ['protocol', deliverBriefLink])
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    try {
+      window.addEventListener('open-url', (event) => {
+        const detail = event && event.detail
+        const url = (event && event.url) || (detail && detail.url) || ''
+        deliverBriefLink(url)
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function openLatestBrief() {
+  $briefRun.set('')
+  $briefOpen.set(true)
+}
+
+function copyField(value, okText, emptyText) {
+  const text = value ? String(value) : ''
+  if (!text) {
+    $handoffHint.set(emptyText)
+    return
+  }
+  const done = (ok) => {
+    $handoffHint.set(ok ? okText : 'copy failed')
+  }
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === 'function'
+    ) {
+      void Promise.resolve(navigator.clipboard.writeText(text))
+        .then(() => done(true))
+        .catch(() => done(false))
+      return
+    }
+  } catch {
+    /* fall through */
+  }
+  done(false)
+}
+
+function focusStudioCreate(frameMounted) {
+  if (!frameMounted) {
+    $handoffHint.set('Open Create in the studio iframe after studio-web is running (#/create).')
+    return
+  }
+  createFocus += 1
+  $createFocus.set(createFocus)
+  $handoffHint.set('Studio iframe set to #/create.')
+}
+
+function jobLine(job) {
+  const kind = job && job.kind ? String(job.kind) : 'job'
+  const order = job && job.order != null && job.order !== '' ? String(job.order) : ''
+  const bits = [order ? order + '. ' + kind : kind]
+  if (job && job.subject) bits.push(String(job.subject))
+  if (job && job.take) bits.push('take ' + String(job.take))
+  if (job && job.adapter_label) bits.push(String(job.adapter_label))
+  if (job && job.status) bits.push(String(job.status))
+  return bits.join(' · ')
+}
+
+function BriefJobs({ jobs }) {
+  if (!Array.isArray(jobs) || jobs.length === 0) {
+    return jsx('div', {
+      className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+      children: 'No ordered jobs in this brief.',
+    })
+  }
+  return jsx('ol', {
+    className: 'flex list-decimal flex-col gap-1 pl-4 text-[0.6875rem] text-(--ui-text-secondary)',
+    children: jobs.map((job, index) =>
+      jsx('li', { children: jobLine(job) }, String((job && job.order) || index) + ':' + String((job && job.kind) || '')),
+    ),
+  })
+}
+
+function BriefDetail({ brief, failed }) {
+  if (failed) {
+    return jsx(EmptyState, {
+      title: 'API unread',
+      description:
+        'The handoff reader is not mounted. Quit Hermes Desktop and relaunch from the menu so plugin_api.py can watch latest.json. This pane did not invent a brief.',
+    })
+  }
+  const row = brief && brief.state === 'brief' ? brief : null
+  if (!row) {
+    const watched = brief && Array.isArray(brief.roots_checked) ? brief.roots_checked.filter(Boolean) : []
+    const where = watched.length ? ' Watched ' + watched.join(', ') + '.' : ''
+    return jsx(EmptyState, {
+      title: 'No handoff yet',
+      description:
+        'No latest.json brief is available from the Studio API or the handoff folders.' +
+        where +
+        ' Send to Hermes in Studio, then this strip updates. Nothing was invented.',
+    })
+  }
+  const flags = flagClaim(row)
+  const honesty = row.honesty || {}
+  return jsxs('div', {
+    className: 'flex flex-col gap-2 rounded-md px-1 py-1',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-2',
+        children: [
+          jsx('div', {
+            className: 'min-w-0 flex-1 truncate text-xs font-medium',
+            children: 'Latest brief',
+          }),
+          jsx(Button, {
+            variant: 'ghost',
+            size: 'sm',
+            className: 'h-7 text-xs',
+            onClick: () => {
+              haptic('tap')
+              $briefOpen.set(false)
+            },
+            children: 'Close brief',
+          }),
+        ],
+      }),
+      jsxs('div', {
+        className: 'text-[0.6875rem] text-(--ui-text-secondary)',
+        children: [
+          'Run ',
+          jsx('code', { children: row.agent_run_id || '' }),
+        ],
+      }),
+      row.deep_link
+        ? jsx('div', {
+            className: 'truncate text-[0.6875rem] text-(--ui-text-tertiary)',
+            children: row.deep_link,
+          })
+        : null,
+      row.drop_dir
+        ? jsx('div', {
+            className: 'truncate text-[0.6875rem] text-(--ui-text-tertiary)',
+            children: row.drop_dir,
+          })
+        : null,
+      jsx('div', {
+        className: 'text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)',
+        children: flags.called_line,
+      }),
+      jsx('div', {
+        className: 'text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)',
+        children: flags.hermes_line,
+      }),
+      jsx('div', {
+        className: 'text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)',
+        children: laneClaim(honesty),
+      }),
+      jsx('div', {
+        className: 'text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)',
+        children: filmClaim(row),
+      }),
+      honesty.note
+        ? jsx('div', {
+            className: 'text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary)',
+            children: honesty.note,
+          })
+        : null,
+      jsx(BriefJobs, { jobs: row.jobs }),
+      jsx('div', {
+        className: 'text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary)',
+        children: row.stitch_note || 'Stitch is the last job.',
+      }),
+    ],
+  })
+}
+
+function HandoffStrip({ handoff, handoffError, frameMounted }) {
+  const open = useValue($briefOpen)
+  const hint = useValue($handoffHint)
+  const failed = Boolean(handoffError && !handoff)
+  const badge = handoffBadge(handoff, failed)
+  const row = handoff && typeof handoff === 'object' ? handoff : null
+  const deepLink = row && row.deep_link ? String(row.deep_link) : ''
+  const dropDir = row && row.drop_dir ? String(row.drop_dir) : ''
+  return jsxs('div', {
+    className: 'flex flex-col gap-2 px-4 pb-2',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2',
+        children: [
+          jsx(Badge, { className: 'shrink-0 text-[0.625rem]', children: badge }),
+          jsx(Button, {
+            variant: 'ghost',
+            size: 'sm',
+            className: 'h-7 text-xs',
+            onClick: () => {
+              haptic('tap')
+              openLatestBrief()
+            },
+            children: 'Open latest brief',
+          }),
+          jsx(Button, {
+            variant: 'ghost',
+            size: 'sm',
+            className: 'h-7 text-xs',
+            onClick: () => {
+              haptic('tap')
+              copyField(deepLink, 'deep link copied', 'no deep link yet')
+            },
+            children: jsxs('span', {
+              className: 'inline-flex items-center gap-1.5',
+              children: [jsx(Codicon, { name: 'copy', size: 14 }), 'Copy deep link'],
+            }),
+          }),
+          jsx(Button, {
+            variant: 'ghost',
+            size: 'sm',
+            className: 'h-7 text-xs',
+            onClick: () => {
+              haptic('tap')
+              copyField(dropDir, 'drop path copied', 'no drop path yet')
+            },
+            children: jsxs('span', {
+              className: 'inline-flex items-center gap-1.5',
+              children: [jsx(Codicon, { name: 'copy', size: 14 }), 'Copy drop path'],
+            }),
+          }),
+          jsx(Button, {
+            variant: 'ghost',
+            size: 'sm',
+            className: 'h-7 text-xs',
+            onClick: () => {
+              haptic('tap')
+              focusStudioCreate(frameMounted)
+            },
+            children: 'Focus Studio Create',
+          }),
+        ],
+      }),
+      jsx('div', {
+        className: 'text-[0.6875rem] leading-relaxed text-(--ui-text-tertiary)',
+        children: HANDOFF_NOTE,
+      }),
+      hint
+        ? jsx('div', {
+            className: 'text-[0.6875rem] text-(--ui-text-quaternary)',
+            children: hint,
+          })
+        : null,
+      open ? jsx(BriefDetail, { brief: row, failed }) : null,
+    ],
+  })
+}
+
 function Chrome({ embedUrl, badge, apiLabel }) {
   const copyHint = useValue($copyHint)
   const browserUrl = embedUrl || STUDIO_WEB_URL
@@ -339,9 +726,11 @@ function Chrome({ embedUrl, badge, apiLabel }) {
   })
 }
 
-function EmbedFrame({ url, title, onRetry }) {
+function EmbedFrame({ url, title, onRetry, createFocusCount }) {
   const nonce = useValue($iframeNonce)
   const failed = useValue($iframeError)
+  const focusCount = createFocusCount || 0
+  const src = focusCount ? withCreateHash(url) : url
   if (!url) {
     return jsx(EmptyState, {
       title: 'No embed URL',
@@ -378,9 +767,9 @@ function EmbedFrame({ url, title, onRetry }) {
     })
   }
   return jsx('iframe', {
-    key: String(nonce) + ':' + url,
+    key: String(nonce) + ':' + String(focusCount) + ':' + src,
     id: 'smf-aigc-studio-pane-frame',
-    src: url,
+    src: src,
     title: title || 'AIGC Studio',
     className: 'min-h-0 w-full flex-1 border-0 bg-(--ui-bg)',
     sandbox: IFRAME_SANDBOX,
@@ -446,9 +835,17 @@ function CheckingStudio() {
   })
 }
 
-function LocalStudio({ apiLabel, refetchStatus, isFetchingStatus }) {
+function LocalStudio({
+  apiLabel,
+  refetchStatus,
+  isFetchingStatus,
+  handoff,
+  handoffError,
+  refetchHandoff,
+}) {
   const forceEmbed = useValue($forceEmbed)
   const tick = useValue($clientProbeTick)
+  const createFocusCount = useValue($createFocus)
   const { data: client, isLoading, isFetching, error } = useQuery({
     queryKey: [ID, 'client-web', tick],
     queryFn: () => probeLocalStudio(),
@@ -475,13 +872,21 @@ function LocalStudio({ apiLabel, refetchStatus, isFetchingStatus }) {
   const onRetry = () => {
     retryLocalProbe()
     void refetchStatus()
+    if (typeof refetchHandoff === 'function') void refetchHandoff()
   }
+
+  const strip = jsx(HandoffStrip, {
+    handoff,
+    handoffError,
+    frameMounted: Boolean(embedUrl),
+  })
 
   if (!forceEmbed && !clientReachable) {
     return jsxs('div', {
       className: 'flex h-full min-h-0 flex-col bg-(--ui-bg)',
       children: [
         jsx(Chrome, { embedUrl: '', badge, apiLabel }),
+        strip,
         jsx(Separator, {}),
         probePending
           ? jsx(CheckingStudio, {})
@@ -494,6 +899,7 @@ function LocalStudio({ apiLabel, refetchStatus, isFetchingStatus }) {
     className: cn('flex h-full min-h-0 flex-col bg-(--ui-bg)'),
     children: [
       jsx(Chrome, { embedUrl, badge, apiLabel }),
+      strip,
       isFetchingStatus
         ? jsx('div', {
             className: 'px-4 text-[0.625rem] text-(--ui-text-quaternary)',
@@ -501,17 +907,34 @@ function LocalStudio({ apiLabel, refetchStatus, isFetchingStatus }) {
           })
         : null,
       jsx(Separator, {}),
-      jsx(EmbedFrame, { url: embedUrl, title: 'AIGC Studio', onRetry }),
+      jsx(EmbedFrame, {
+        url: embedUrl,
+        title: 'AIGC Studio',
+        onRetry,
+        createFocusCount,
+      }),
     ],
   })
 }
 
 function StudioPane({ ctx }) {
+  readLocationBriefOnce()
+  const briefRun = useValue($briefRun)
   const { data, error, refetch, isFetching } = useQuery({
     queryKey: [ID, 'status'],
     queryFn: async () => ctx.rest('/status'),
     staleTime: 10 * 1000,
     retry: 1,
+  })
+  const handoffQuery = useQuery({
+    queryKey: [ID, 'handoff', briefRun],
+    queryFn: async () => {
+      const path = briefRun ? '/handoff/' + briefRun : '/handoff'
+      return ctx.rest(path)
+    },
+    staleTime: 5 * 1000,
+    refetchInterval: 8000,
+    retry: 0,
   })
   const status = asStatus(data)
   const backendDown = Boolean(error && !data)
@@ -521,6 +944,9 @@ function StudioPane({ ctx }) {
     apiLabel,
     refetchStatus: refetch,
     isFetchingStatus: isFetching,
+    handoff: handoffQuery.data,
+    handoffError: handoffQuery.error,
+    refetchHandoff: handoffQuery.refetch,
   })
 }
 
@@ -529,6 +955,7 @@ export default {
   name: 'AIGC Studio',
   defaultEnabled: true,
   register(ctx) {
+    bindBriefProtocol()
     ctx.registerMany([
       {
         id: 'pane',
@@ -570,6 +997,27 @@ export default {
           label: 'Open AIGC Studio pane',
           keywords: ['aigc', 'studio', 'pane', 'studio-web', 'local', '5174', 'continuity'],
           run: () => host.navigate(ROUTE),
+        },
+      },
+      {
+        id: `${ID}-palette-brief`,
+        area: PALETTE_AREA,
+        data: {
+          id: `${ID}-open-brief`,
+          label: 'Open AIGC handoff brief',
+          keywords: [
+            'aigc',
+            'handoff',
+            'brief',
+            'hermes',
+            'deep link',
+            'hermes://aigc/brief',
+            'latest.json',
+          ],
+          run: () => {
+            openLatestBrief()
+            host.navigate(ROUTE)
+          },
         },
       },
     ])
