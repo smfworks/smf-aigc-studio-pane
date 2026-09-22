@@ -25,8 +25,9 @@ Operator path: [docs/STUDIO.md](https://github.com/smfworks/aigc-production-flow
 - **Studio docs / GitHub** — `docs/STUDIO.md` and the product repo
 - **Copy dev command** — `./scripts/dev-studio.sh all`
 - **Honesty** — if the client probe cannot reach studio-web, the pane says **studio-web is not running on :5174** and how to start it (`./scripts/dev-studio.sh all` from `aigc-production-flow`). It does not iframe a refused connection. Electron often paints that as a blank white frame and does not fire iframe `onError`. Projects, continuity rows, jobs, and media are whatever studio-web itself loaded. This pane never fabricates them
+- **Hermes brief** — a strip above the iframe. After Studio **Send to Hermes**, the strip shows the new brief without opening the drop folder by hand. See [Hermes handoff](#hermes-handoff) below
 
-Not in scope: Spark / Comfy / MiniMax calls, publishing likeness stills or MP4s, a generate button, or a second copy of the pack builder.
+Not in scope: Spark / Comfy / MiniMax calls, publishing likeness stills or MP4s, a generate button, or a second copy of the pack builder. This pane does not start Hermes and does not call Comfy.
 
 ## Install
 
@@ -101,6 +102,39 @@ Local studio-web is not started by this plugin. The iframe mounts only after the
 
 `generate-ok` stays inside studio, and only after gates, hop-1 receipts, and sign-off. This pane does not call it and does not draw a fake queue. Likeness stills and engine MP4s are not shipped here. See [docs/STUDIO.md](https://github.com/smfworks/aigc-production-flow/blob/main/docs/STUDIO.md).
 
+## Hermes handoff
+
+Studio writes the brief. This pane reads it. The contract is [aigc-production-flow AGENTS.md](https://github.com/smfworks/aigc-production-flow/blob/main/AGENTS.md).
+
+| Piece | Role |
+|---|---|
+| `data/handoff/latest.json` | Pointer to the newest brief. `STUDIO_HANDOFF_ROOT` overrides the directory. |
+| `hermes-handoff.json` + `agent-brief.json` | Read from `drop_dir` (or from `<root>/<run>/` and `<root>/latest/` when the pointer path is outside the roots this process may read). |
+| `hermes://aigc/brief?run=<uuid>` | Deep link for that run. |
+| `GET /api/agent-runs/{id}` | Studio status for a run id, when `:8000` answers. Bearer token is `STUDIO_API_TOKEN`, else `AIGC_STUDIO_TOKEN`, else `local-dev-token`. |
+| `GET /api/handoffs` | Used only when the JSON itself is a brief (`agent_run_id` / `deep_link`). The pack-zip stage on that route is not this brief. |
+
+The page polls `GET /handoff` (or `GET /handoff/{run_id}`) every 8 seconds through `plugin_api.py`. That handler prefers the Studio API when `127.0.0.1:8000` answers, because the Electron page cannot read arbitrary `data/handoff` paths. It then fills ordered jobs from the drop files. If the API is down, it still reads:
+
+- `HANDOFF_ROOT`
+- `STUDIO_HANDOFF_ROOT`
+- `STUDIO_HERMES_DROP`
+- the sibling `handoff` directory of `STUDIO_MEDIA_ROOT`
+- `~/.hermes/aigc/latest.json`
+- `~/aigc-production-flow/data/handoff` and the same path under `~/src`, `~/work`, `~/code`, `~/projects`, and `~/dev`
+
+The strip badge is **Latest brief**, **No handoff yet**, or **API unread** (the plugin route did not answer). **Open latest brief** lists the run id, deep link, honesty flags, ordered jobs, and the stitch note. The last job in `agent-brief.json` is stitch. **Copy deep link** and **Copy drop path** copy those two strings.
+
+**Focus Studio Create** sets the studio iframe to `#/create` when the frame is mounted. When studio-web is not mounted, the strip says to open Create in the iframe after it is running.
+
+⌘K → **Open AIGC handoff brief** opens this pane on the latest brief. A `?run=<uuid>` on the pane route opens that run. If the desktop host exposes `registerProtocol` / `open-url` / `deep-link`, the pane binds `hermes://aigc/brief`. This plugin SDK has no verified protocol registrar beyond those hooks, so the palette command is the one to use.
+
+Honesty, matching the Studio contract:
+
+- `called_comfy` and `hermes_ran` stay false unless the brief or the agent-run record says true. A file on disk is not a run.
+- Stub vs live comes from the brief labels (`still_label`, `clip_label`, and the live flags). Unset lanes are not live.
+- No finished film unless `produced_mp4` is true and that file is on disk. A video file next to a brief with `produced_mp4: false` is not a finished film. Stitch stays a plan until then.
+
 ## Architecture
 
 ```
@@ -111,7 +145,7 @@ smf-aigc-studio-pane/
 ├── __init__.py
 ├── dashboard/
 │   ├── manifest.json        # api: plugin_api.py
-│   └── plugin_api.py        # GET /status  GET /health
+│   └── plugin_api.py        # GET /status  GET /health  GET /handoff
 ├── desktop/
 │   └── plugin.js            # copy to ~/.hermes/desktop-plugins/smf-aigc-studio-pane/
 └── tests/
@@ -122,6 +156,8 @@ smf-aigc-studio-pane/
 |---|---|
 | `GET /status` | Report local studio-web / preview / API URLs. Probe `127.0.0.1:5174`, `:4174`, and `:8000/readyz` + `/healthz` only. No project or job JSON. |
 | `GET /health` | `{ status: ok, plugin }` |
+| `GET /handoff` | Latest Hermes brief from the Studio API when `:8000` answers, else `latest.json`. Empty when nothing has been written. |
+| `GET /handoff/{run_id}` | The brief for `hermes://aigc/brief?run=<uuid>`. |
 
 The iframe uses the same sandbox as SMF H3 Capture (`allow-scripts allow-same-origin allow-forms allow-popups allow-downloads`) so studio-web can keep its own session and local auth header behavior.
 
